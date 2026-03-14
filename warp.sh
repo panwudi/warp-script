@@ -959,8 +959,59 @@ _verify_checksum() {
 
 case "\${1:-}" in
   status)
-    echo "=== WARP 状态 ===" ; warp-cli status 2>/dev/null || echo "未运行"
-    echo; /usr/local/bin/warp-google status ;;
+    # ── 关键状态：Google 连通性（最重要，放最上面）──
+    _google_ok=0
+    if curl -s --max-time 6 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null \
+       | grep -q "200"; then
+      _google_ok=1
+    fi
+
+    echo
+    if [[ ${_google_ok} -eq 1 ]]; then
+      echo -e "\${_G}╔══════════════════════════════════════════════════╗\${_N}"
+      echo -e "\${_G}║  ✓  Google / Gemini  已连通                      ║\${_N}"
+      echo -e "\${_G}╚══════════════════════════════════════════════════╝\${_N}"
+    else
+      echo -e "\033[1;31m╔══════════════════════════════════════════════════╗\033[0m"
+      echo -e "\033[1;31m║  ✗  Google / Gemini  未连通                      ║\033[0m"
+      echo -e "\033[1;31m╚══════════════════════════════════════════════════╝\033[0m"
+      echo -e "    \${_Y}提示: 运行 'warp test' 查看逐层诊断\${_N}"
+    fi
+    echo
+
+    # ── WARP 客户端状态 ──
+    _warp_st="\$(warp-cli status 2>/dev/null || echo '未运行')"
+    if echo "\${_warp_st}" | grep -qi 'Connected'; then
+      echo -e "  WARP    \${_G}● 已连接\${_N}  端口 \${WARP_PROXY_PORT}"
+    else
+      echo -e "  WARP    \033[1;31m● 未连接\033[0m  (\${_warp_st##*:})"
+    fi
+
+    # ── 透明代理状态 ──
+    if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
+      _backend="\$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo '?')"
+      echo -e "  tproxy  \${_G}● 运行中\${_N}  backend=\${_backend}  :\${TPROXY_PORT}"
+    else
+      echo -e "  tproxy  \033[1;31m● 未运行\033[0m"
+    fi
+
+    # ── ipset 条目数 ──
+    _cnt="\$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
+    if [[ "\${_cnt}" -gt 0 ]]; then
+      echo -e "  ipset   \${_G}● \${_cnt} 条 Google IP 段\${_N}"
+    else
+      echo -e "  ipset   \033[1;31m● 空\033[0m"
+    fi
+
+    # ── iptables 规则 ──
+    if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then
+      echo -e "  iptables \${_G}● REDIRECT 规则已加载\${_N}"
+    else
+      echo -e "  iptables \033[1;31m● 规则缺失\033[0m"
+    fi
+    echo
+    echo -e "  \${_Y}详细诊断: warp test  |  原始日志: warp debug\${_N}"
+    echo ;;
   start)
     warp-cli connect 2>/dev/null || true
     /usr/local/bin/warp-google start ;;
@@ -1056,7 +1107,8 @@ case "\${1:-}" in
     chmod +x "\${local_tmp}"; bash "\${local_tmp}" --install
     echo "[warp] 升级完成" ;;
   uninstall)
-    read -r -p "确定要卸载 WARP？[y/N]: " confirm
+    # 强制从终端读取，避免 stdin 是管道时静默跳过
+    read -r -p "确定要卸载 WARP？[y/N]: " confirm </dev/tty
     [[ "\${confirm}" =~ ^[Yy]\$ ]] || { echo "已取消"; exit 0; }
     echo "正在卸载..."
     /usr/local/bin/warp-google stop 2>/dev/null || true
@@ -1260,7 +1312,12 @@ show_menu() {
   read -r -p "请输入选项 [0-3]: " choice
   case "${choice}" in
     1) do_install ;;
-    2) /usr/local/bin/warp uninstall 2>/dev/null || warn "请先安装" ;;
+    2)
+      if [[ -x /usr/local/bin/warp ]]; then
+        /usr/local/bin/warp uninstall
+      else
+        warn "WARP 未安装，无需卸载"
+      fi ;;
     3) do_status ;;
     0) echo "再见"; exit 0 ;;
     *) error "无效选项" ;;
