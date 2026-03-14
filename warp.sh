@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # WARP Script - Google unlock via Cloudflare WARP (ipset)
 # Author: gzsteven666
-# Version: 1.4.1
+# Fork: flyto (https://github.com/panwudi/warp-script)
+#   - Replace redsocks with built-in Python transparent proxy (warp-tproxy)
+#   - Fix dependency install failures and uninstall bugs
+# Version: 1.4.2
 #
 # 使用方法:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/gzsteven666/warp-script/main/warp.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/panwudi/warp-script/main/warp.sh)
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.4.1"
+SCRIPT_VERSION="1.4.2"
 
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 REDSOCKS_PORT="${REDSOCKS_PORT:-12345}"
 
-REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/gzsteven666/warp-script/main/warp.sh}"
+REPO_RAW_URL="${REPO_RAW_URL:-https://raw.githubusercontent.com/panwudi/warp-script/main/warp.sh}"
 REPO_SHA256_URL="${REPO_SHA256_URL:-${REPO_RAW_URL}.sha256}"
 LOG_FILE="${LOG_FILE:-/var/log/warp-install.log}"
 
@@ -232,7 +235,8 @@ install_prereqs() {
     ubuntu|debian)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y curl ca-certificates gnupg lsb-release iptables ipset python3 redsocks dnsutils util-linux cron >/dev/null 2>&1 || {
+      # 注意：不再依赖 redsocks 包，已用内置 Python tproxy 替代
+      apt-get install -y curl ca-certificates gnupg lsb-release iptables ipset python3 dnsutils util-linux cron >/dev/null 2>&1 || {
         error "依赖安装失败"
         return 1
       }
@@ -240,10 +244,10 @@ install_prereqs() {
     centos|rhel|rocky|almalinux|fedora)
       if command_exists dnf; then
         dnf install -y epel-release >/dev/null 2>&1 || true
-        dnf install -y curl ca-certificates iptables ipset python3 redsocks bind-utils util-linux cronie >/dev/null 2>&1 || true
+        dnf install -y curl ca-certificates iptables ipset python3 bind-utils util-linux cronie >/dev/null 2>&1 || true
       else
         yum install -y epel-release >/dev/null 2>&1 || true
-        yum install -y curl ca-certificates iptables ipset python3 redsocks bind-utils util-linux cronie >/dev/null 2>&1 || true
+        yum install -y curl ca-certificates iptables ipset python3 bind-utils util-linux cronie >/dev/null 2>&1 || true
       fi
       ;;
     *)
@@ -334,55 +338,148 @@ setup_gai_conf() {
   fi
 }
 
-write_redsocks_conf() {
-  info "配置 redsocks..."
-  cat > /etc/redsocks.conf <<EOF_REDSOCKS
-base {
-  log_debug = off;
-  log_info = on;
-  log = "syslog:daemon";
-  daemon = off;
-  redirector = iptables;
-}
-redsocks {
-  local_ip = 127.0.0.1;
-  local_port = ${REDSOCKS_PORT};
-  ip = 127.0.0.1;
-  port = ${WARP_PROXY_PORT};
-  type = socks5;
-}
-EOF_REDSOCKS
-  success "redsocks 配置完成"
-}
+# -----------------------------------------------------------------------------
+# warp-tproxy: 用 Python3 实现的透明 SOCKS5 转发器，替代 redsocks
+# 纯 stdlib，无额外依赖，轻量且可靠
+# -----------------------------------------------------------------------------
+write_tproxy_service() {
+  info "写入 /usr/local/bin/warp-tproxy (Python transparent proxy)..."
 
-write_redsocks_service() {
-  info "创建 redsocks systemd 服务..."
-  local redsocks_bin
-  redsocks_bin="$(command -v redsocks || echo /usr/sbin/redsocks)"
+  cat > /usr/local/bin/warp-tproxy <<'EOF_TPROXY'
+#!/usr/bin/env python3
+"""
+warp-tproxy — lightweight transparent SOCKS5 redirector (replaces redsocks)
+Reads REDSOCKS_PORT and WARP_PROXY_PORT from environment.
+"""
+import os, socket, struct, threading, signal, sys, logging
 
-  cat > /etc/systemd/system/redsocks.service <<EOF_REDSOCKS_SERVICE
+LISTEN_ADDR = '127.0.0.1'
+LISTEN_PORT = int(os.environ.get('REDSOCKS_PORT', 12345))
+SOCKS5_HOST = '127.0.0.1'
+SOCKS5_PORT = int(os.environ.get('WARP_PROXY_PORT', 40000))
+# Linux: SOL_IP=0, SO_ORIGINAL_DST=80
+_SO_ORIG_DST = 80
+
+def _get_orig_dst(sock):
+    """从 iptables REDIRECT 连接中取回原始目的地址。"""
+    raw = sock.getsockopt(socket.IPPROTO_IP, _SO_ORIG_DST, 16)
+    port = struct.unpack_from('!H', raw, 2)[0]
+    ip   = socket.inet_ntoa(raw[4:8])
+    return ip, port
+
+def _socks5_connect(s, ip, port):
+    """SOCKS5 无认证握手 + CONNECT 请求。"""
+    s.sendall(b'\x05\x01\x00')
+    resp = s.recv(2)
+    if resp != b'\x05\x00':
+        raise ConnectionError(f'SOCKS5 auth failed: {resp!r}')
+    addr = socket.inet_aton(ip)
+    s.sendall(b'\x05\x01\x00\x01' + addr + struct.pack('!H', port))
+    resp = s.recv(10)
+    if len(resp) < 2 or resp[1] != 0:
+        raise ConnectionError(f'SOCKS5 connect failed: {resp!r}')
+
+def _pipe(src, dst):
+    """单向流量转发，结束时通知对端。"""
+    try:
+        while True:
+            chunk = src.recv(65536)
+            if not chunk:
+                break
+            dst.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for sock, how in ((src, socket.SHUT_RD), (dst, socket.SHUT_WR)):
+            try:
+                sock.shutdown(how)
+            except OSError:
+                pass
+
+def _handle(cli):
+    srv = None
+    try:
+        ip, port = _get_orig_dst(cli)
+        srv = socket.create_connection((SOCKS5_HOST, SOCKS5_PORT), timeout=10)
+        _socks5_connect(srv, ip, port)
+        srv.settimeout(None)
+        cli.settimeout(None)
+        t = threading.Thread(target=_pipe, args=(srv, cli), daemon=True)
+        t.start()
+        _pipe(cli, srv)
+        t.join(timeout=60)
+    except Exception as e:
+        logging.debug('warp-tproxy handle: %s', e)
+    finally:
+        for s in (cli, srv):
+            if s:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+def main():
+    logging.basicConfig(level=logging.WARNING, format='%(message)s')
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((LISTEN_ADDR, LISTEN_PORT))
+    server.listen(256)
+
+    def _shutdown(*_):
+        try:
+            server.close()
+        except OSError:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    print(f'warp-tproxy listening on {LISTEN_ADDR}:{LISTEN_PORT} '
+          f'-> socks5://{SOCKS5_HOST}:{SOCKS5_PORT}', flush=True)
+
+    while True:
+        try:
+            cli, _ = server.accept()
+            threading.Thread(target=_handle, args=(cli,), daemon=True).start()
+        except OSError:
+            break
+
+if __name__ == '__main__':
+    main()
+EOF_TPROXY
+
+  chmod +x /usr/local/bin/warp-tproxy
+  success "warp-tproxy 脚本已写入"
+
+  info "创建 warp-tproxy systemd 服务..."
+  # 停掉可能遗留的老进程（旧版本 redsocks）
+  pkill -x redsocks 2>/dev/null || true
+  systemctl stop redsocks 2>/dev/null || true
+
+  cat > /etc/systemd/system/warp-tproxy.service <<EOF_TPROXY_SERVICE
 [Unit]
-Description=Redsocks transparent proxy daemon
+Description=WARP transparent SOCKS5 proxy (warp-tproxy)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${redsocks_bin} -c /etc/redsocks.conf
+Environment=REDSOCKS_PORT=${REDSOCKS_PORT}
+Environment=WARP_PROXY_PORT=${WARP_PROXY_PORT}
+ExecStart=/usr/local/bin/warp-tproxy
 Restart=always
 RestartSec=2
+StandardOutput=null
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF_REDSOCKS_SERVICE
-
-  # 清理旧版本遗留的非 systemd 进程，避免端口冲突
-  pkill -x redsocks 2>/dev/null || true
-  sleep 0.5
+EOF_TPROXY_SERVICE
 
   systemctl daemon-reload
-  systemctl enable --now redsocks >/dev/null 2>&1 || true
-  success "redsocks 服务已创建"
+  systemctl enable --now warp-tproxy >/dev/null 2>&1 || true
+  success "warp-tproxy 服务已启动"
 }
 
 write_keepalive() {
@@ -401,15 +498,15 @@ if ! flock -n 9; then
   exit 0
 fi
 
-restart_redsocks() {
+restart_tproxy() {
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart redsocks >/dev/null 2>&1 && return 0
-    logger -t "${LOG_TAG}" "systemctl restart redsocks failed"
+    systemctl restart warp-tproxy >/dev/null 2>&1 && return 0
+    logger -t "${LOG_TAG}" "systemctl restart warp-tproxy failed"
     return 1
   fi
-  pkill -x redsocks 2>/dev/null || true
+  pkill -f warp-tproxy 2>/dev/null || true
   sleep 1
-  redsocks -c /etc/redsocks.conf >/dev/null 2>&1 &
+  /usr/local/bin/warp-tproxy >/dev/null 2>&1 &
 }
 
 if ! curl -s --max-time 10 -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" -o /dev/null https://www.google.com; then
@@ -421,11 +518,11 @@ if ! curl -s --max-time 10 -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" -o /dev/n
 fi
 
 if ! curl -s --max-time 10 -o /dev/null https://www.google.com; then
-  logger -t "${LOG_TAG}" "Transparent proxy failed, restarting redsocks..."
-  if restart_redsocks; then
-    logger -t "${LOG_TAG}" "redsocks restarted"
+  logger -t "${LOG_TAG}" "Transparent proxy failed, restarting warp-tproxy..."
+  if restart_tproxy; then
+    logger -t "${LOG_TAG}" "warp-tproxy restarted"
   else
-    logger -t "${LOG_TAG}" "redsocks restart failed"
+    logger -t "${LOG_TAG}" "warp-tproxy restart failed"
   fi
 fi
 EOF_KEEPALIVE
@@ -549,21 +646,21 @@ info() { echo "[warp-google] $*"; }
 
 warp_connect() { warp-cli --accept-tos connect 2>/dev/null || warp-cli connect 2>/dev/null || true; }
 
-start_redsocks() {
+start_tproxy() {
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart redsocks >/dev/null 2>&1 || systemctl start redsocks >/dev/null 2>&1 || true
+    systemctl restart warp-tproxy >/dev/null 2>&1 || systemctl start warp-tproxy >/dev/null 2>&1 || true
   else
-    pkill -x redsocks 2>/dev/null || true
+    pkill -f warp-tproxy 2>/dev/null || true
     sleep 0.5
-    redsocks -c /etc/redsocks.conf >/dev/null 2>&1 &
+    /usr/local/bin/warp-tproxy >/dev/null 2>&1 &
   fi
 }
 
-stop_redsocks() {
+stop_tproxy() {
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl stop redsocks >/dev/null 2>&1 || true
+    systemctl stop warp-tproxy >/dev/null 2>&1 || true
   else
-    pkill -x redsocks 2>/dev/null || true
+    pkill -f warp-tproxy 2>/dev/null || true
   fi
 }
 
@@ -658,7 +755,7 @@ print('\\n'.join(prefixes))
 start() {
   info "启动..."
   warp_connect
-  start_redsocks
+  start_tproxy
   ipset_apply
   iptables_apply
   info "完成"
@@ -666,7 +763,7 @@ start() {
 
 stop() {
   info "停止..."
-  stop_redsocks
+  stop_tproxy
   iptables -t nat -D OUTPUT -j "${NAT_CHAIN}" 2>/dev/null || true
   iptables -t nat -F "${NAT_CHAIN}" 2>/dev/null || true
   iptables -t nat -X "${NAT_CHAIN}" 2>/dev/null || true
@@ -686,11 +783,11 @@ status() {
   echo "=== QUIC 阻断 ==="
   iptables -t filter -S "${QUIC_CHAIN}" 2>/dev/null || echo "无"
   echo
-  echo "=== redsocks ==="
+  echo "=== warp-tproxy ==="
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl is-active --quiet redsocks && echo "运行中(systemd)" || echo "未运行"
+    systemctl is-active --quiet warp-tproxy && echo "运行中(systemd)" || echo "未运行"
   else
-    pgrep -x redsocks >/dev/null && echo "运行中" || echo "未运行"
+    pgrep -f warp-tproxy >/dev/null && echo "运行中" || echo "未运行"
   fi
 }
 
@@ -830,21 +927,22 @@ case "\${1:-}" in
     /usr/local/bin/warp-google stop 2>/dev/null || true
     warp-cli disconnect 2>/dev/null || true
 
-    systemctl disable --now warp-keepalive.timer 2>/dev/null || true
+    systemctl disable --now warp-keepalive.timer  2>/dev/null || true
     systemctl disable --now warp-keepalive.service 2>/dev/null || true
-    systemctl disable --now warp-google 2>/dev/null || true
-    systemctl disable --now redsocks 2>/dev/null || true
-    systemctl disable --now warp-svc 2>/dev/null || true
+    systemctl disable --now warp-google.service   2>/dev/null || true
+    systemctl disable --now warp-tproxy.service   2>/dev/null || true
+    systemctl disable --now warp-svc.service      2>/dev/null || true
 
     rm -f /etc/systemd/system/warp-keepalive.timer
     rm -f /etc/systemd/system/warp-keepalive.service
     rm -f /etc/systemd/system/warp-google.service
-    rm -f /etc/systemd/system/redsocks.service
+    rm -f /etc/systemd/system/warp-tproxy.service
 
     rm -f /usr/local/bin/warp-google
     rm -f /usr/local/bin/warp-keepalive
-    rm -f /etc/redsocks.conf
+    rm -f /usr/local/bin/warp-tproxy
     rm -rf /etc/warp-google
+
     systemctl daemon-reload 2>/dev/null || true
 
     iptables -t nat -D OUTPUT -j WARP_GOOGLE 2>/dev/null || true
@@ -877,12 +975,17 @@ case "\${1:-}" in
       source /etc/os-release
       case "\${ID:-}" in
         ubuntu|debian)
-          apt-get remove -y cloudflare-warp redsocks 2>/dev/null || true
+          apt-get remove -y cloudflare-warp 2>/dev/null || true
           rm -f /etc/apt/sources.list.d/cloudflare-client.list
           rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           ;;
         centos|rhel|rocky|almalinux|fedora)
-          (command -v dnf && dnf remove -y cloudflare-warp redsocks) || yum remove -y cloudflare-warp redsocks 2>/dev/null || true
+          # 修复原脚本 bug：dnf/yum 分支判断错误，现在用 if/else 确保互斥
+          if command -v dnf >/dev/null 2>&1; then
+            dnf remove -y cloudflare-warp 2>/dev/null || true
+          else
+            yum remove -y cloudflare-warp 2>/dev/null || true
+          fi
           rm -f /etc/yum.repos.d/cloudflare-warp.repo
           ;;
       esac
@@ -919,8 +1022,8 @@ write_systemd_service() {
   cat > /etc/systemd/system/warp-google.service <<'EOF_WARP_SERVICE'
 [Unit]
 Description=WARP Google Transparent Proxy
-After=network-online.target warp-svc.service redsocks.service
-Wants=network-online.target warp-svc.service redsocks.service
+After=network-online.target warp-svc.service warp-tproxy.service
+Wants=network-online.target warp-svc.service warp-tproxy.service
 
 [Service]
 Type=oneshot
@@ -947,8 +1050,7 @@ do_install() {
   install_warp_client
 
   setup_gai_conf
-  write_redsocks_conf
-  write_redsocks_service
+  write_tproxy_service   # 替代原 write_redsocks_conf + write_redsocks_service
 
   write_warp_google
   write_warp_cli
