@@ -276,12 +276,14 @@ nameserver 1.0.0.1
 options timeout:2 attempts:3 rotate
 EOF_RESOLV
 
-  echo "file" > "${DNS_MODE_FILE}"
+  # 如果原来是 immutable，写完后重新加锁，防止其他脚本覆盖我们的 DNS 配置
   if [[ ${was_immutable} -eq 1 ]]; then
-    success "DNS 已配置为 Cloudflare (解除了 chattr +i)"
+    _resolv_set_immutable
+    success "DNS 已配置为 Cloudflare (已重新加 chattr +i)"
   else
     success "DNS 已配置为 Cloudflare (1.1.1.1)"
   fi
+  echo "file" > "${DNS_MODE_FILE}"
 }
 
 restore_dns() {
