@@ -185,8 +185,23 @@ _in_container() {
 }
 
 # ---------------------------------------------------------------------------
-# DNS 配置  —  兼容容器/只读 resolv.conf
+# DNS 配置  —  兼容容器/只读/immutable resolv.conf
 # ---------------------------------------------------------------------------
+
+# chattr +i 检测（V2bX 等脚本常见操作）
+_resolv_is_immutable() {
+  command_exists lsattr || return 1
+  lsattr /etc/resolv.conf 2>/dev/null | awk '{print $1}' | grep -q 'i'
+}
+
+_resolv_clear_immutable() {
+  chattr -i /etc/resolv.conf 2>/dev/null || true
+}
+
+_resolv_set_immutable() {
+  chattr +i /etc/resolv.conf 2>/dev/null || true
+}
+
 setup_cloudflare_dns() {
   info "配置 Cloudflare DNS..."
   mkdir -p "${CACHE_DIR}"
@@ -214,14 +229,18 @@ EOF_DNS
     return 0
   fi
 
-  # 2. 直写 /etc/resolv.conf — 先做可写性探测，避免容器只读挂载报错
+  # 2. 直写 /etc/resolv.conf — 需处理三种阻塞场景：
+  #    a) symlink（由系统/容器 runtime 管理）
+  #    b) 目录只读（容器 bind mount）
+  #    c) chattr +i immutable（V2bX 等脚本设置）
+
   if [[ -L /etc/resolv.conf ]]; then
     warn "resolv.conf 是符号链接 (由系统管理)，跳过直写"
     echo "skip" > "${DNS_MODE_FILE}"
     return 0
   fi
 
-  # 尝试原子写入测试文件到同目录
+  # 尝试原子写入测试文件到同目录（检测目录只读）
   local test_file="/etc/.warp-dns-test.$$"
   if ! touch "${test_file}" 2>/dev/null; then
     warn "resolv.conf 目录不可写（容器只读挂载？），跳过 DNS 配置"
@@ -230,14 +249,39 @@ EOF_DNS
   fi
   rm -f "${test_file}"
 
+  # 检测并临时解除 immutable 属性
+  local was_immutable=0
+  if _resolv_is_immutable; then
+    info "resolv.conf 有 chattr +i 属性（可能由 V2bX 等设置），临时解除..."
+    _resolv_clear_immutable
+    was_immutable=1
+  fi
+
+  # 最终写入测试（排除未知原因的不可写）
+  if ! cp /dev/null /etc/.warp-resolv-write-test.$$ 2>/dev/null; then
+    warn "resolv.conf 仍不可写，跳过 DNS 配置"
+    [[ ${was_immutable} -eq 1 ]] && _resolv_set_immutable
+    echo "skip" > "${DNS_MODE_FILE}"
+    return 0
+  fi
+  rm -f /etc/.warp-resolv-write-test.$$
+
   cp /etc/resolv.conf "${DNS_BACKUP_FILE}" 2>/dev/null || true
+  # 记录原始 immutable 状态，卸载时据此恢复
+  echo "${was_immutable}" > "${CACHE_DIR}/resolv_was_immutable"
+
   cat > /etc/resolv.conf <<'EOF_RESOLV'
 nameserver 1.1.1.1
 nameserver 1.0.0.1
 options timeout:2 attempts:3 rotate
 EOF_RESOLV
+
   echo "file" > "${DNS_MODE_FILE}"
-  success "DNS 已配置为 Cloudflare (1.1.1.1)"
+  if [[ ${was_immutable} -eq 1 ]]; then
+    success "DNS 已配置为 Cloudflare (解除了 chattr +i)"
+  else
+    success "DNS 已配置为 Cloudflare (1.1.1.1)"
+  fi
 }
 
 restore_dns() {
@@ -257,9 +301,19 @@ restore_dns() {
       ;;
     file)
       if [[ -f "${DNS_BACKUP_FILE}" ]]; then
+        # 先确保可写（安装时已解除 immutable，但恢复前需再次确认）
+        _resolv_clear_immutable 2>/dev/null || true
         mv "${DNS_BACKUP_FILE}" /etc/resolv.conf 2>/dev/null || true
         echo "已恢复原 DNS 配置"
       fi
+      # 如果原来有 immutable 属性，恢复它
+      local was_imm
+      was_imm="$(cat "${CACHE_DIR}/resolv_was_immutable" 2>/dev/null || echo 0)"
+      if [[ "${was_imm}" == "1" ]]; then
+        _resolv_set_immutable
+        info "已恢复 resolv.conf chattr +i 属性"
+      fi
+      rm -f "${CACHE_DIR}/resolv_was_immutable"
       ;;
     skip) ;;  # nothing to do
   esac
@@ -1015,9 +1069,19 @@ case "\${1:-}" in
           systemctl restart systemd-resolved 2>/dev/null || true
           ;;
         file)
-          [[ -f /etc/resolv.conf.warp-backup ]] \
-            && mv /etc/resolv.conf.warp-backup /etc/resolv.conf 2>/dev/null || true \
-            && echo "已恢复原 DNS 配置"
+          # 先解除 immutable（如有），再恢复备份
+          chattr -i /etc/resolv.conf 2>/dev/null || true
+          if [[ -f /etc/resolv.conf.warp-backup ]]; then
+            mv /etc/resolv.conf.warp-backup /etc/resolv.conf 2>/dev/null || true
+            echo "已恢复原 DNS 配置"
+          fi
+          # 如果原来有 immutable 属性，恢复它
+          _was_imm="\$(cat "${CACHE_DIR}/resolv_was_immutable" 2>/dev/null || echo 0)"
+          if [[ "\${_was_imm}" == "1" ]]; then
+            chattr +i /etc/resolv.conf 2>/dev/null || true
+            echo "已恢复 resolv.conf chattr +i 属性"
+          fi
+          rm -f "${CACHE_DIR}/resolv_was_immutable"
           ;;
         skip) ;;
       esac
