@@ -1268,12 +1268,14 @@ do_install() {
   setup_cloudflare_dns
   install_warp_client
   setup_gai_conf
+  # 先写默认 ENV_FILE，确保 warp-tproxy.service 启动时能读到 EnvironmentFile
+  _save_env
   install_tproxy_backend
   write_warp_google
   write_warp_cli
   write_keepalive
   write_systemd_service
-  configure_warp
+  configure_warp           # 可能更新端口，会再次 _save_env
   systemctl restart warp-tproxy >/dev/null 2>&1 || true
 
   /usr/local/bin/warp-google update || warn "Google IP 更新失败，使用静态列表"
@@ -1284,7 +1286,7 @@ do_install() {
   echo -e "\n管理命令: ${GREEN}warp {status|start|stop|restart|test|debug|ip|update|upgrade|uninstall}${NC}\n"
 
   info "安装后逐层诊断..."
-  sleep 2
+  sleep 5
   warp test
 }
 
