@@ -2,6 +2,10 @@
 # WARP Script - Google Gemini 送中
 # Original Author : gzsteven666
 # Fork            : FLYTOex NetWork <https://github.com/panwudi/warp-script>
+#   v1.6.0  Fix loopback detection (root cause of ProxyAddressNotAvailable)
+#           Remove Python asyncio fallback (dead code path)
+#           Fix registration-reuse logic bug
+#           Improved warp test diagnostics (layer 0: loopback)
 #   v1.5.0  Port-conflict auto-resolve · Registration reuse
 #           Single-source ENV file · Backward-compat uninstall
 #           Layered diagnostics · Green success banner
@@ -11,18 +15,15 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.6.0"
 
 # ---------------------------------------------------------------------------
 # 运行时配置文件 — 端口的唯一真相来源
-# 安装时写入，所有组件运行时 source，不再写死
 # ---------------------------------------------------------------------------
 ENV_FILE="/etc/warp-google/env"
 
-# 默认值（会被 ENV_FILE 覆盖）
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 TPROXY_PORT="${TPROXY_PORT:-12345}"
-# 向后兼容旧版本 REDSOCKS_PORT 变量
 [[ -z "${TPROXY_PORT:-}" && -n "${REDSOCKS_PORT:-}" ]] && TPROXY_PORT="${REDSOCKS_PORT}"
 
 # 若已有 env 文件，优先读取（升级场景）
@@ -41,7 +42,6 @@ CACHE_DIR="/etc/warp-google"
 GOOG_JSON_URL="https://www.gstatic.com/ipranges/goog.json"
 IPV4_CACHE_FILE="${CACHE_DIR}/google_ipv4.txt"
 DNS_MODE_FILE="${CACHE_DIR}/dns_mode"
-TPROXY_BACKEND_FILE="${CACHE_DIR}/tproxy_backend"
 DNS_BACKUP_FILE="/etc/resolv.conf.warp-backup"
 RESOLVED_DROPIN_DIR="/etc/systemd/resolved.conf.d"
 RESOLVED_DROPIN_FILE="${RESOLVED_DROPIN_DIR}/99-warp-cloudflare.conf"
@@ -112,15 +112,15 @@ STATIC_GOOGLE_IPV4_CIDRS="
 # ---------------------------------------------------------------------------
 # 颜色 & 日志
 # ---------------------------------------------------------------------------
-_W='\033[1;37m'      # white (letters)
-_O='\033[38;5;208m'  # orange-256 (logo accent)
-_C='\033[1;36m'      # cyan  (box / info)
-_G='\033[1;32m'      # green
-_R='\033[1;31m'      # red
-_Y='\033[1;33m'      # yellow
-_B='\033[0;34m'      # blue
-_M='\033[1;35m'      # magenta
-_D='\033[2;37m'      # dim white
+_W='\033[1;37m'
+_O='\033[38;5;208m'
+_C='\033[1;36m'
+_G='\033[1;32m'
+_R='\033[1;31m'
+_Y='\033[1;33m'
+_B='\033[0;34m'
+_M='\033[1;35m'
+_D='\033[2;37m'
 NC='\033[0m'
 RED="${_R}" GREEN="${_G}" YELLOW="${_Y}" CYAN="${_C}"
 
@@ -137,14 +137,7 @@ check_root() {
 }
 
 # ---------------------------------------------------------------------------
-# Banner — FLYTOex NetWork
-# 参考 FLYTO logo：白色块状工业体 + 橙色方框（logo 的 O）
-#
-#  ████  █    ██ ██  █████  ██████
-#  ██    █    ████     ██   ██  ██   <- 橙色方框右上角填充
-#  ███   █    ████     ██   ██████
-#  ██    █    ██ ██    ██   ██  ██
-#  ██    ████ ██ ██    ██   ██████
+# Banner
 # ---------------------------------------------------------------------------
 show_banner() {
   clear 2>/dev/null || true
@@ -202,7 +195,27 @@ _in_container() {
 }
 
 # ---------------------------------------------------------------------------
-# resolv.conf helpers — symlink / 只读目录 / chattr +i 三种场景
+# Loopback 接口检查
+# warp-svc 绑定 127.0.0.1:PORT 时需要 lo 接口正常
+# 某些 VPS 面板脚本（如 V2bX）会在重装后删除 lo 地址
+# ---------------------------------------------------------------------------
+ensure_loopback() {
+  if ! ip addr show lo 2>/dev/null | grep -q 'inet 127.0.0.1'; then
+    warn "loopback 接口缺少 127.0.0.1 地址，正在修复..."
+    ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+    ip link set lo up 2>/dev/null || true
+    if ip addr show lo 2>/dev/null | grep -q 'inet 127.0.0.1'; then
+      success "loopback 已修复 (127.0.0.1/8)"
+    else
+      error "loopback 修复失败 — warp-svc 将无法绑定代理端口"
+      error "请手动运行: ip addr add 127.0.0.1/8 dev lo && ip link set lo up"
+      return 1
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# resolv.conf helpers
 # ---------------------------------------------------------------------------
 _resolv_is_immutable() {
   command_exists lsattr || return 1
@@ -218,7 +231,6 @@ setup_cloudflare_dns() {
   info "配置 Cloudflare DNS..."
   mkdir -p "${CACHE_DIR}"
 
-  # 1. systemd-resolved（非容器）
   if ! _in_container && command_exists systemctl \
       && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved\.service' \
       && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
@@ -241,13 +253,11 @@ EOF_DNS
     return 0
   fi
 
-  # 2. 直写 resolv.conf — 三重阻塞检测
   if [[ -L /etc/resolv.conf ]]; then
     warn "resolv.conf 是符号链接（由系统管理），跳过直写"
     echo "skip" > "${DNS_MODE_FILE}"; return 0
   fi
 
-  # 目录可写性探测
   local test_file="/etc/.warp-dns-test.$$"
   if ! touch "${test_file}" 2>/dev/null; then
     warn "resolv.conf 目录不可写（容器只读挂载？），跳过 DNS 配置"
@@ -255,14 +265,12 @@ EOF_DNS
   fi
   rm -f "${test_file}"
 
-  # chattr +i 检测（V2bX 等脚本常见操作）
   local was_immutable=0
   if _resolv_is_immutable; then
-    info "resolv.conf 有 chattr +i 属性（可能由 V2bX 等设置），临时解除..."
+    info "resolv.conf 有 chattr +i 属性，临时解除..."
     _resolv_clear_immutable; was_immutable=1
   fi
 
-  # 最终写入
   cp /etc/resolv.conf "${DNS_BACKUP_FILE}" 2>/dev/null || true
   echo "${was_immutable}" > "${CACHE_DIR}/resolv_was_immutable"
   cat > /etc/resolv.conf <<'EOF_RESOLV'
@@ -271,7 +279,6 @@ nameserver 1.0.0.1
 options timeout:2 attempts:3 rotate
 EOF_RESOLV
 
-  # 写完重新加锁，保护我们的 DNS 不被其他脚本覆盖
   if [[ ${was_immutable} -eq 1 ]]; then
     _resolv_set_immutable
     success "DNS 已配置为 Cloudflare（chattr +i 已重新加锁）"
@@ -306,7 +313,7 @@ restore_dns() {
 }
 
 # ---------------------------------------------------------------------------
-# 依赖安装（不依赖 redsocks 包）
+# 依赖安装
 # ---------------------------------------------------------------------------
 install_prereqs() {
   info "安装依赖..."
@@ -338,7 +345,7 @@ ensure_kernel_modules() {
 check_iptables() {
   command_exists iptables || { error "iptables 未找到"; return 1; }
   iptables -t nat -L >/dev/null 2>&1 \
-    || warn "iptables nat 表不可用 —— 请确认容器有 NET_ADMIN capability"
+    || warn "iptables nat 表不可用 — 请确认容器有 NET_ADMIN capability"
 }
 
 # ---------------------------------------------------------------------------
@@ -384,19 +391,14 @@ EOF_REPO
 }
 
 # ---------------------------------------------------------------------------
-# WARP 配置 — 注册复用 + 端口冲突三段处理
+# WARP 配置 — 注册复用 + 端口冲突处理 + loopback 检查
 # ---------------------------------------------------------------------------
 
-# 检测 ss 中是否有外部进程占用端口
 _port_held_externally() {
   local port="$1"
-  # warp-svc 绑定的端口不会出现在 ss 的 TCP LISTEN 里（它是 SOCKS5 内部状态）
-  # 如果 ss 里有东西，一定是外部进程
   ss -tlnp 2>/dev/null | grep -q ":${port}[[:space:]]"
 }
 
-# 找一个可用的代理端口
-# 返回值写入全局 WARP_PROXY_PORT
 _find_free_proxy_port() {
   local port="${WARP_PROXY_PORT}"
   local limit=$((port + 20))
@@ -420,8 +422,11 @@ configure_warp() {
 
   # --- 注册：有则复用，无则新建 ---
   local reg_ok=0
-  warp-cli --accept-tos registration show >/dev/null 2>&1 && reg_ok=1 \
-    || warp-cli registration show >/dev/null 2>&1 && reg_ok=1 || true
+  if warp-cli --accept-tos registration show >/dev/null 2>&1 \
+     || warp-cli registration show >/dev/null 2>&1; then
+    reg_ok=1
+  fi
+
   if [[ ${reg_ok} -eq 0 ]]; then
     info "未找到 WARP 注册，创建新注册..."
     warp-cli --accept-tos registration new >/dev/null 2>&1 \
@@ -437,11 +442,8 @@ configure_warp() {
     || warp-cli mode proxy >/dev/null 2>&1 || true
 
   # --- 端口冲突处理 ---
-  # 外部进程占用：_find_free_proxy_port 处理
   _find_free_proxy_port
 
-  # 连接 + 端口冲突重试（最多 3 次）
-  # warp-svc 的"port already bound"是内部状态，ss 看不到，需重启 warp-svc 清除
   local attempt=0 connected=0 status=""
   while [[ ${attempt} -lt 3 && ${connected} -eq 0 ]]; do
     info "设置代理端口: ${WARP_PROXY_PORT}（第 $((attempt+1)) 次尝试）"
@@ -450,7 +452,6 @@ configure_warp() {
     warp-cli --accept-tos connect >/dev/null 2>&1 \
       || warp-cli connect >/dev/null 2>&1 || true
 
-    # 轮询等待连接，最多 20 秒
     local i
     for i in $(seq 1 20); do
       status="$(warp-cli --accept-tos status 2>/dev/null \
@@ -465,14 +466,23 @@ configure_warp() {
     if [[ ${connected} -eq 1 ]]; then break; fi
 
     # 判断是否端口冲突错误
-    if echo "${status}" | grep -qi 'proxy port'; then
-      if [[ ${attempt} -eq 0 ]]; then
-        # 第一次：warp-svc 自占 → 重启释放
-        info "检测到端口 ${WARP_PROXY_PORT} 被 warp-svc 内部状态占用，重启 warp-svc..."
+    if echo "${status}" | grep -qi 'proxy port\|ProxyAddress'; then
+      # 先排除 loopback 问题（最常见的隐性原因）
+      if ! ip addr show lo 2>/dev/null | grep -q 'inet 127.0.0.1'; then
+        warn "检测到 loopback 接口异常（无 127.0.0.1），修复中..."
+        ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+        ip link set lo up 2>/dev/null || true
+        sleep 1
+        # loopback 修复后重启 warp-svc 让它重新绑定
+        systemctl restart warp-svc >/dev/null 2>&1 || true
+        sleep 3
+      elif [[ ${attempt} -eq 0 ]]; then
+        # loopback 正常 → warp-svc 内部状态残留，重启释放
+        info "重启 warp-svc 释放内部端口状态..."
         systemctl restart warp-svc >/dev/null 2>&1 || true
         sleep 3
       else
-        # 第二次：换端口
+        # 第三次：换端口
         WARP_PROXY_PORT=$((WARP_PROXY_PORT + 1))
         warn "切换到端口 ${WARP_PROXY_PORT}..."
       fi
@@ -482,7 +492,6 @@ configure_warp() {
 
   if [[ ${connected} -eq 1 ]]; then
     success "WARP 已连接，使用端口 ${WARP_PROXY_PORT}"
-    # 验证 SOCKS5
     if ss -tlnp 2>/dev/null | grep -q ":${WARP_PROXY_PORT}"; then
       success "SOCKS5 代理端口 ${WARP_PROXY_PORT} 已监听"
     fi
@@ -492,11 +501,9 @@ configure_warp() {
     warn "安装完成后运行 'warp test' 进行逐层诊断"
   fi
 
-  # --- 保存最终端口到 ENV_FILE ---
   _save_env
 }
 
-# 将当前端口配置写入 ENV_FILE（各组件运行时 source 它）
 _save_env() {
   mkdir -p "${CACHE_DIR}"
   cat > "${ENV_FILE}" <<EOF_ENV
@@ -515,8 +522,7 @@ setup_gai_conf() {
 }
 
 # ---------------------------------------------------------------------------
-# 透明代理 — ipt2socks（主）/ Python asyncio（备）
-# 所有端口在运行时从 ENV_FILE 读取，不再写死
+# 透明代理 — ipt2socks
 # ---------------------------------------------------------------------------
 
 _is_elf() {
@@ -525,16 +531,15 @@ _is_elf() {
   [[ "${magic}" == "7f454c46" ]]
 }
 
-_try_install_ipt2socks() {
+install_ipt2socks() {
   local arch; arch="$(uname -m)"
   local arch_key
   case "${arch}" in
     x86_64)        arch_key="x86_64"  ;;
     aarch64|arm64) arch_key="aarch64" ;;
-    *) info "架构 ${arch} 无 ipt2socks 预编译包"; return 1 ;;
+    *) error "架构 ${arch} 无 ipt2socks 预编译包"; return 1 ;;
   esac
 
-  # 跳过重复安装
   if [[ -x /usr/local/bin/ipt2socks ]]; then
     success "ipt2socks 已存在，跳过下载"; return 0
   fi
@@ -563,134 +568,35 @@ except Exception: pass
 v${IPT2SOCKS_FALLBACK_VER}/ipt2socks_v${IPT2SOCKS_FALLBACK_VER}_linux_${arch_key}"
 
   if ! curl -fsSL --max-time 60 "${download_url}" -o "${tmp}" 2>/dev/null; then
-    rm -f "${tmp}"; warn "ipt2socks 下载失败"; return 1
+    rm -f "${tmp}"; error "ipt2socks 下载失败"; return 1
   fi
   if ! _is_elf "${tmp}"; then
-    rm -f "${tmp}"; warn "ipt2socks 下载内容非 ELF"; return 1
+    rm -f "${tmp}"; error "ipt2socks 下载内容非 ELF"; return 1
   fi
   install -m 755 "${tmp}" /usr/local/bin/ipt2socks
   rm -f "${tmp}"
   success "ipt2socks 安装完成"
 }
 
-# Python asyncio fallback（端口通过 ENV_FILE 注入，不写死）
-_write_python_tproxy() {
-  info "写入 Python asyncio tproxy (fallback)..."
-  cat > /usr/local/bin/warp-tproxy-py <<'PYEOF'
-#!/usr/bin/env python3
-"""warp-tproxy-py — asyncio transparent SOCKS5 redirector (fallback)
-Ports sourced from /etc/warp-google/env at startup.
-"""
-import asyncio, os, socket, struct, signal, sys
-
-def _load_env():
-    env_file = '/etc/warp-google/env'
-    cfg = {}
-    try:
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    k, v = line.split('=', 1)
-                    cfg[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    return cfg
-
-_cfg = _load_env()
-_LISTEN = ('127.0.0.1', int(_cfg.get('TPROXY_PORT', os.environ.get('TPROXY_PORT', 12345))))
-_SOCKS5 = ('127.0.0.1', int(_cfg.get('WARP_PROXY_PORT', os.environ.get('WARP_PROXY_PORT', 40000))))
-_SO_ORIG_DST = 80
-
-def _get_orig_dst(sock):
-    raw  = sock.getsockopt(socket.IPPROTO_IP, _SO_ORIG_DST, 16)
-    port = struct.unpack_from('!H', raw, 2)[0]
-    ip   = socket.inet_ntoa(raw[4:8])
-    return ip, port
-
-async def _pipe(reader, writer):
-    try:
-        while True:
-            chunk = await reader.read(65536)
-            if not chunk: break
-            writer.write(chunk); await writer.drain()
-    except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, OSError):
-        pass
-    finally:
-        try: writer.close(); await writer.wait_closed()
-        except Exception: pass
-
-async def _socks5_handshake(reader, writer, dst_ip, dst_port):
-    writer.write(b'\x05\x01\x00'); await writer.drain()
-    resp = await asyncio.wait_for(reader.readexactly(2), timeout=10)
-    if resp != b'\x05\x00': raise ConnectionError(f'socks5 auth: {resp!r}')
-    req = b'\x05\x01\x00\x01' + socket.inet_aton(dst_ip) + struct.pack('!H', dst_port)
-    writer.write(req); await writer.drain()
-    resp = await asyncio.wait_for(reader.readexactly(10), timeout=10)
-    if resp[1] != 0: raise ConnectionError(f'socks5 connect: {resp!r}')
-
-async def _handle(cli_r, cli_w):
-    srv_r = srv_w = None
-    try:
-        sock = cli_w.get_extra_info('socket')
-        dst_ip, dst_port = _get_orig_dst(sock)
-        srv_r, srv_w = await asyncio.wait_for(asyncio.open_connection(*_SOCKS5), timeout=10)
-        await _socks5_handshake(srv_r, srv_w, dst_ip, dst_port)
-        await asyncio.gather(_pipe(cli_r, srv_w), _pipe(srv_r, cli_w))
-    except Exception as e:
-        import logging; logging.debug('warp-tproxy-py: %s', e)
-    finally:
-        for w in (cli_w, srv_w):
-            if w:
-                try: w.close(); await w.wait_closed()
-                except Exception: pass
-
-async def _serve():
-    loop = asyncio.get_running_loop()
-    stop = loop.create_future()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig,
-            lambda: stop.set_result(None) if not stop.done() else None)
-    srv = await asyncio.start_server(_handle, *_LISTEN, reuse_address=True)
-    print(f'warp-tproxy-py {_LISTEN[0]}:{_LISTEN[1]} -> socks5://{_SOCKS5[0]}:{_SOCKS5[1]}',
-          flush=True)
-    async with srv: await stop
-
-if __name__ == '__main__':
-    asyncio.run(_serve())
-PYEOF
-  chmod +x /usr/local/bin/warp-tproxy-py
-}
-
 install_tproxy_backend() {
   info "安装透明代理组件..."
   mkdir -p "${CACHE_DIR}"
 
-  # 清理旧版本 redsocks（向后兼容 v1.4.x 之前）
+  # 清理旧版本 redsocks（向后兼容）
   systemctl stop redsocks 2>/dev/null || true
   systemctl disable redsocks 2>/dev/null || true
   pkill -x redsocks 2>/dev/null || true
   rm -f /etc/redsocks.conf /etc/systemd/system/redsocks.service
+  # 清理旧版本 python fallback
+  rm -f /usr/local/bin/warp-tproxy-py
 
-  local backend="python"
-  _try_install_ipt2socks && backend="ipt2socks"
-  [[ "${backend}" == "python" ]] && {
-    warn "使用 Python asyncio tproxy 作为透明代理后端"
-    _write_python_tproxy
-  }
-  echo "${backend}" > "${TPROXY_BACKEND_FILE}"
+  install_ipt2socks || { error "ipt2socks 安装失败，无法继续"; return 1; }
 
-  # Service 使用 EnvironmentFile= 读取端口，不写死
-  local exec_start
-  if [[ "${backend}" == "ipt2socks" ]]; then
-    exec_start='/usr/local/bin/ipt2socks -4 -b 127.0.0.1 -l ${TPROXY_PORT} -s 127.0.0.1 -p ${WARP_PROXY_PORT} -j 2'
-  else
-    exec_start='/usr/local/bin/warp-tproxy-py'
-  fi
+  local exec_start='/usr/local/bin/ipt2socks -4 -b 127.0.0.1 -l ${TPROXY_PORT} -s 127.0.0.1 -p ${WARP_PROXY_PORT} -j 2'
 
   cat > /etc/systemd/system/warp-tproxy.service <<EOF_SVC
 [Unit]
-Description=WARP transparent proxy (${backend})
+Description=WARP transparent proxy (ipt2socks)
 After=network-online.target
 Wants=network-online.target
 
@@ -709,11 +615,11 @@ EOF_SVC
 
   systemctl daemon-reload
   systemctl enable --now warp-tproxy >/dev/null 2>&1 || true
-  success "透明代理就绪 (${backend})"
+  success "透明代理就绪 (ipt2socks)"
 }
 
 # ---------------------------------------------------------------------------
-# warp-google 管理脚本（运行时 source ENV_FILE）
+# warp-google 管理脚本
 # ---------------------------------------------------------------------------
 write_warp_google() {
   info "创建 /usr/local/bin/warp-google..."
@@ -726,7 +632,6 @@ set -euo pipefail
 ENV_FILE="/etc/warp-google/env"
 [[ -f "${ENV_FILE}" ]] && source "${ENV_FILE}" || true
 
-# 向后兼容旧版本
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
 TPROXY_PORT="${TPROXY_PORT:-${REDSOCKS_PORT:-12345}}"
 IPSET_NAME="${IPSET_NAME:-warp_google4}"
@@ -906,7 +811,6 @@ do_status() {
   command -v systemctl >/dev/null 2>&1 \
     && { systemctl is-active --quiet warp-tproxy && echo "运行中 (systemd)" || echo "未运行"; } \
     || echo "未知"
-  echo; echo "=== 后端 ===" ; cat /etc/warp-google/tproxy_backend 2>/dev/null || echo "未知"
   echo; echo "=== 端口配置 ===" ; cat "${ENV_FILE}" 2>/dev/null || echo "未初始化"
 }
 
@@ -929,13 +833,11 @@ WARPGOOGLEEOF
 # ---------------------------------------------------------------------------
 write_warp_cli() {
   info "创建 /usr/local/bin/warp..."
-  # 使用 quoted heredoc (<<'WARPCLIEOF') 彻底避免安装时变量展开问题
-  # 所有 $ 均为运行时处理，install-time 值通过顶部变量块写入
+
   cat > /usr/local/bin/warp <<'WARPCLIEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 运行时读取端口配置
 ENV_FILE="/etc/warp-google/env"
 [[ -f "${ENV_FILE}" ]] && source "${ENV_FILE}" || true
 WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
@@ -946,7 +848,7 @@ RESOLVED_DROPIN_FILE="/etc/systemd/resolved.conf.d/99-warp-cloudflare.conf"
 GAI_MARK="# warp-script: prefer ipv4"
 REPO_RAW_URL="https://raw.githubusercontent.com/panwudi/warp-script/main/warp.sh"
 REPO_SHA256_URL="${REPO_RAW_URL}.sha256"
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.6.0"
 SHA256SUM_BIN="$(command -v sha256sum 2>/dev/null || command -v shasum 2>/dev/null || true)"
 
 _G='\033[1;32m' _R='\033[1;31m' _Y='\033[1;33m' _C='\033[1;36m' _W='\033[1;37m' _N='\033[0m'
@@ -971,7 +873,6 @@ _verify_checksum() {
 
 case "${1:-}" in
   status)
-    # ── 关键状态：Google 连通性（最重要，顶部大横幅）──
     _google_ok=0
     if curl -s --max-time 6 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null \
        | grep -q "200"; then
@@ -991,7 +892,6 @@ case "${1:-}" in
     fi
     echo
 
-    # ── WARP 客户端状态 ──
     _warp_st="$(warp-cli status 2>/dev/null || echo '未运行')"
     if echo "${_warp_st}" | grep -qi 'Connected'; then
       echo -e "  WARP     ${_G}● 已连接${_N}  端口 ${WARP_PROXY_PORT}"
@@ -999,15 +899,12 @@ case "${1:-}" in
       echo -e "  WARP     ${_R}● 未连接${_N}  (${_warp_st##*:})"
     fi
 
-    # ── 透明代理状态 ──
     if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
-      _backend="$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo '?')"
-      echo -e "  tproxy   ${_G}● 运行中${_N}  backend=${_backend}  :${TPROXY_PORT}"
+      echo -e "  tproxy   ${_G}● 运行中${_N}  ipt2socks  :${TPROXY_PORT}"
     else
       echo -e "  tproxy   ${_R}● 未运行${_N}"
     fi
 
-    # ── ipset 条目数 ──
     _cnt="$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
     if [[ "${_cnt}" -gt 0 ]]; then
       echo -e "  ipset    ${_G}● ${_cnt} 条 Google IP 段${_N}"
@@ -1015,7 +912,6 @@ case "${1:-}" in
       echo -e "  ipset    ${_R}● 空${_N}"
     fi
 
-    # ── iptables 规则 ──
     if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then
       echo -e "  iptables ${_G}● REDIRECT 规则已加载${_N}"
     else
@@ -1037,6 +933,17 @@ case "${1:-}" in
 
   test)
     ok=1
+    echo "--- [0] 基础环境 ---"
+    # loopback
+    if ip addr show lo 2>/dev/null | grep -q 'inet 127.0.0.1'; then
+      echo -e "  ${_G}✓ loopback 127.0.0.1 正常${_N}"
+    else
+      echo -e "  ${_R}✗ loopback 缺少 127.0.0.1${_N} — warp-svc 无法绑定代理端口"
+      echo "    修复: ip addr add 127.0.0.1/8 dev lo && ip link set lo up"
+      ok=0
+    fi
+    echo
+
     echo "--- [1] WARP 客户端状态 ---"
     warp_status="$(warp-cli status 2>/dev/null || echo '无法获取')"
     echo "${warp_status}"
@@ -1069,8 +976,7 @@ case "${1:-}" in
 
     echo "--- [4] warp-tproxy 进程 ---"
     if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
-      _be="$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo unknown)"
-      echo -e "  ${_G}✓ 运行中 (backend: ${_be})${_N}"
+      echo -e "  ${_G}✓ 运行中 (ipt2socks)${_N}"
     else
       echo "  ✗ 未运行 — systemctl restart warp-tproxy"; ok=0
     fi
@@ -1124,6 +1030,9 @@ case "${1:-}" in
     fi ;;
 
   debug)
+    echo "=== loopback ==="
+    ip addr show lo 2>&1 | head -5 || true
+    echo
     echo "=== warp-cli status ==="
     warp-cli status 2>&1 || true
     echo
@@ -1169,7 +1078,6 @@ case "${1:-}" in
     echo "[warp] 升级完成" ;;
 
   uninstall)
-    # 强制从终端读取，避免 stdin 是管道时静默跳过
     read -r -p "确定要卸载 WARP？[y/N]: " confirm </dev/tty
     [[ "${confirm}" =~ ^[Yy]$ ]] || { echo "已取消"; exit 0; }
     echo "正在卸载..."
@@ -1245,7 +1153,7 @@ case "${1:-}" in
     echo -e "  ${_G}start${_N}     启动"
     echo -e "  ${_G}stop${_N}      停止"
     echo -e "  ${_G}restart${_N}   重启"
-    echo -e "  ${_G}test${_N}      8 层逐层诊断（含端到端）"
+    echo -e "  ${_G}test${_N}      9 层逐层诊断（含端到端）"
     echo -e "  ${_G}debug${_N}     原始诊断信息（日志/端口/规则）"
     echo -e "  ${_G}ip${_N}        查看直连 IP 与 WARP IP"
     echo -e "  ${_G}update${_N}    更新 Google IP 段"
@@ -1259,34 +1167,44 @@ WARPCLIEOF
 }
 
 # ---------------------------------------------------------------------------
-# Keepalive（source ENV_FILE，不写死端口）
+# Keepalive
 # ---------------------------------------------------------------------------
 write_keepalive() {
   info "创建 keepalive (每 10 分钟)..."
 
-  cat > /usr/local/bin/warp-keepalive <<KEEPEOF
+  cat > /usr/local/bin/warp-keepalive <<'KEEPEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 ENV_FILE="/etc/warp-google/env"
-[[ -f "\${ENV_FILE}" ]] && source "\${ENV_FILE}" || true
-WARP_PROXY_PORT="\${WARP_PROXY_PORT:-40000}"
-LOCK_FILE="${WARP_KEEPALIVE_LOCK}"
+[[ -f "${ENV_FILE}" ]] && source "${ENV_FILE}" || true
+WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+LOCK_FILE="/run/warp-keepalive.lock"
 LOG_TAG="warp-keepalive"
 
-exec 9>"\${LOCK_FILE}"; flock -n 9 || exit 0
+exec 9>"${LOCK_FILE}"; flock -n 9 || exit 0
 
-if ! curl -s --max-time 10 -x "socks5h://127.0.0.1:\${WARP_PROXY_PORT}" \
+# 先确保 loopback 正常
+if ! ip addr show lo 2>/dev/null | grep -q 'inet 127.0.0.1'; then
+  logger -t "${LOG_TAG}" "loopback missing 127.0.0.1, fixing..."
+  ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+  ip link set lo up 2>/dev/null || true
+  sleep 1
+  systemctl restart warp-svc 2>/dev/null || true
+  sleep 3
+fi
+
+if ! curl -s --max-time 10 -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" \
    -o /dev/null https://www.google.com; then
-  logger -t "\${LOG_TAG}" "WARP proxy unreachable, reconnecting..."
+  logger -t "${LOG_TAG}" "WARP proxy unreachable, reconnecting..."
   warp-cli disconnect 2>/dev/null || true; sleep 2
   warp-cli connect   2>/dev/null || true; sleep 3
 fi
 
 if ! curl -s --max-time 10 -o /dev/null https://www.google.com; then
-  logger -t "\${LOG_TAG}" "transparent proxy down, restarting warp-tproxy..."
+  logger -t "${LOG_TAG}" "transparent proxy down, restarting warp-tproxy..."
   systemctl restart warp-tproxy >/dev/null 2>&1 \
-    && logger -t "\${LOG_TAG}" "restarted ok" \
-    || logger -t "\${LOG_TAG}" "restart failed"
+    && logger -t "${LOG_TAG}" "restarted ok" \
+    || logger -t "${LOG_TAG}" "restart failed"
 fi
 KEEPEOF
   chmod +x /usr/local/bin/warp-keepalive
@@ -1346,16 +1264,16 @@ do_install() {
   install_prereqs
   ensure_kernel_modules
   check_iptables
+  ensure_loopback
   setup_cloudflare_dns
   install_warp_client
   setup_gai_conf
-  install_tproxy_backend   # 在 configure_warp 之前，service 需要先创建
+  install_tproxy_backend
   write_warp_google
   write_warp_cli
   write_keepalive
   write_systemd_service
-  configure_warp           # 决定最终端口并写入 ENV_FILE
-  # 用最终端口重启 tproxy（ENV_FILE 已更新）
+  configure_warp
   systemctl restart warp-tproxy >/dev/null 2>&1 || true
 
   /usr/local/bin/warp-google update || warn "Google IP 更新失败，使用静态列表"
