@@ -112,15 +112,22 @@ STATIC_GOOGLE_IPV4_CIDRS="
 # ---------------------------------------------------------------------------
 # 颜色 & 日志
 # ---------------------------------------------------------------------------
-_R='\033[1;31m' _Y='\033[1;33m' _G='\033[1;32m'
-_C='\033[1;36m' _M='\033[1;35m' _W='\033[1;37m'
-_B='\033[0;34m' RED='\033[0;31m' GREEN='\033[0;32m'
-YELLOW='\033[0;33m' CYAN='\033[0;36m' NC='\033[0m'
+_W='\033[1;37m'      # white (letters)
+_O='\033[38;5;208m'  # orange-256 (logo accent)
+_C='\033[1;36m'      # cyan  (box / info)
+_G='\033[1;32m'      # green
+_R='\033[1;31m'      # red
+_Y='\033[1;33m'      # yellow
+_B='\033[0;34m'      # blue
+_M='\033[1;35m'      # magenta
+_D='\033[2;37m'      # dim white
+NC='\033[0m'
+RED="${_R}" GREEN="${_G}" YELLOW="${_Y}" CYAN="${_C}"
 
-info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
-success() { echo -e "${GREEN}[OK]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+info()    { echo -e "${_C}[INFO]${NC} $*"; }
+success() { echo -e "${_G}[OK]${NC} $*"; }
+warn()    { echo -e "${_Y}[WARN]${NC} $*"; }
+error()   { echo -e "${_R}[ERROR]${NC} $*" >&2; }
 log()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE" 2>/dev/null || true; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -131,21 +138,27 @@ check_root() {
 
 # ---------------------------------------------------------------------------
 # Banner — FLYTOex NetWork
+# 参考 FLYTO logo：白色块状工业体 + 橙色方框（logo 的 O）
+#
+#  ████  █    ██ ██  █████  ██████
+#  ██    █    ████     ██   ██  ██   <- 橙色方框右上角填充
+#  ███   █    ████     ██   ██████
+#  ██    █    ██ ██    ██   ██  ██
+#  ██    ████ ██ ██    ██   ██████
 # ---------------------------------------------------------------------------
 show_banner() {
   clear 2>/dev/null || true
-  echo -e "${_C}┌─────────────────────────────────────────────────────────────┐${NC}"
-  echo -e "${_C}│${NC}                                                             ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_R}▄████${NC} ${_Y}▄█${NC}   ${_G}▀██${NC} ${_C}▄▄▄▄█████▄${NC} ${_M}▄██████${NC} ${_W}███████${NC} ${_R}██${NC} ${_Y}██${NC}             ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_R}██${NC}    ${_Y}██${NC}    ${_G}██${NC} ${_C}   ██   ${NC}  ${_M}██    ██${NC} ${_W}██   ${NC}   ${_R}██${NC} ${_Y}██${NC}             ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_R}█████${NC} ${_Y}██${NC}    ${_G}██${NC} ${_C}   ██   ${NC}  ${_M}██    ██${NC} ${_W}█████${NC}   ${_R}████${NC}               ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_R}██${NC}    ${_Y}██${NC}    ${_G}██${NC} ${_C}   ██   ${NC}  ${_M}██    ██${NC} ${_W}██   ${NC}   ${_R}██${NC} ${_Y}██${NC}             ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_R}██${NC}    ${_Y}████████${NC} ${_C}   ██   ${NC}  ${_M}████████${NC} ${_W}███████${NC} ${_R}██${NC}  ${_Y}██${NC}             ${_C}│${NC}"
-  echo -e "${_C}│${NC}                                                             ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_W}NetWork${NC}  ${_C}·${NC}  ${_G}WARP Script${NC}  ${_C}·${NC}  ${_Y}Google Gemini 送中${NC}              ${_C}│${NC}"
-  echo -e "${_C}│${NC}  ${_W}v${SCRIPT_VERSION}${NC}  ${_C}·${NC}  ${_B}github.com/panwudi/warp-script${NC}                    ${_C}│${NC}"
-  echo -e "${_C}│${NC}                                                             ${_C}│${NC}"
-  echo -e "${_C}└─────────────────────────────────────────────────────────────┘${NC}"
+  local W='\033[1;37m' O='\033[38;5;208m' C='\033[1;36m' N='\033[0m'
+  echo
+  echo -e "${W}  ███████╗██╗  ██╗   ██╗████████╗ ██████╗ ${N}"
+  echo -e "${W}  ██╔════╝██║  ╚██╗ ██╔╝╚══██╔══╝██╔═══██╗${N}"
+  echo -e "${W}  █████╗  ██║   ╚████╔╝    ██║   ██║   ██║${N}"
+  echo -e "${W}  ██╔══╝  ██║    ╚██╔╝     ██║   ██║   ██║${N}"
+  echo -e "${W}  ██║     ███████╗██║      ██║   ╚██████╔╝${O}█╗${N}"
+  echo -e "${W}  ╚═╝     ╚══════╝╚═╝      ╚═╝    ╚═════╝ ${O}╚╝${N}"
+  echo
+  echo -e "  ${O}▌${N} ${W}NetWork${N}  ${C}·${N}  WARP Script  ${C}·${N}  ${O}Google Gemini 送中${N}"
+  echo -e "  ${O}▌${N} ${C}v${SCRIPT_VERSION}${N}  ${C}·${N}  github.com/panwudi/warp-script"
   echo
 }
 
@@ -916,50 +929,49 @@ WARPGOOGLEEOF
 # ---------------------------------------------------------------------------
 write_warp_cli() {
   info "创建 /usr/local/bin/warp..."
-
-  # 注意：此处 heredoc 使用 'EOF_WARPCLI' 带引号，内部 $ 不展开（由运行时处理）
-  # 但部分变量（REPO_URL, GAI_MARK 等在安装时确定的值）用 \$ 手动转义写死
-  cat > /usr/local/bin/warp <<WARPCLIEOF
+  # 使用 quoted heredoc (<<'WARPCLIEOF') 彻底避免安装时变量展开问题
+  # 所有 $ 均为运行时处理，install-time 值通过顶部变量块写入
+  cat > /usr/local/bin/warp <<'WARPCLIEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 运行时读取端口配置
 ENV_FILE="/etc/warp-google/env"
-[[ -f "\${ENV_FILE}" ]] && source "\${ENV_FILE}" || true
-WARP_PROXY_PORT="\${WARP_PROXY_PORT:-40000}"
-TPROXY_PORT="\${TPROXY_PORT:-12345}"
+[[ -f "${ENV_FILE}" ]] && source "${ENV_FILE}" || true
+WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+TPROXY_PORT="${TPROXY_PORT:-12345}"
+CACHE_DIR="/etc/warp-google"
+DNS_MODE_FILE="${CACHE_DIR}/dns_mode"
+RESOLVED_DROPIN_FILE="/etc/systemd/resolved.conf.d/99-warp-cloudflare.conf"
+GAI_MARK="# warp-script: prefer ipv4"
+REPO_RAW_URL="https://raw.githubusercontent.com/panwudi/warp-script/main/warp.sh"
+REPO_SHA256_URL="${REPO_RAW_URL}.sha256"
+SCRIPT_VERSION="1.5.0"
+SHA256SUM_BIN="$(command -v sha256sum 2>/dev/null || command -v shasum 2>/dev/null || true)"
 
-REPO_RAW_URL="${REPO_RAW_URL}"
-REPO_SHA256_URL="${REPO_SHA256_URL}"
-GAI_MARK="${GAI_MARK}"
-SCRIPT_VERSION="${SCRIPT_VERSION}"
-DNS_MODE_FILE="${DNS_MODE_FILE}"
-RESOLVED_DROPIN_FILE="${RESOLVED_DROPIN_FILE}"
-CACHE_DIR="${CACHE_DIR}"
-SHA256SUM_BIN="\$(command -v sha256sum 2>/dev/null || command -v shasum 2>/dev/null || true)"
-
-_G='\033[1;32m' _Y='\033[1;33m' _C='\033[1;36m' _W='\033[1;37m' _N='\033[0m'
+_G='\033[1;32m' _R='\033[1;31m' _Y='\033[1;33m' _C='\033[1;36m' _W='\033[1;37m' _N='\033[0m'
 
 _verify_checksum() {
-  local file="\$1" sum_file="\$2"
-  [[ "\${WARP_SKIP_CHECKSUM:-0}" == "1" ]] && { echo "[warp] 跳过校验"; return 0; }
-  [[ -n "\${SHA256SUM_BIN}" ]] || { echo "[warp] 未找到 sha256 工具" >&2; return 1; }
+  local file="$1" sum_file="$2"
+  [[ "${WARP_SKIP_CHECKSUM:-0}" == "1" ]] && { echo "[warp] 跳过校验"; return 0; }
+  [[ -n "${SHA256SUM_BIN}" ]] || { echo "[warp] 未找到 sha256 工具" >&2; return 1; }
   local expected actual
-  expected="\$(awk '{print \$1}' "\${sum_file}" | head -n1)"
-  [[ -n "\${expected}" ]] || { echo "[warp] 校验文件无效" >&2; return 1; }
-  if [[ "\${SHA256SUM_BIN}" == *shasum ]]; then
-    actual="\$(shasum -a 256 "\${file}" | awk '{print \$1}')"
+  expected="$(awk '{print $1}' "${sum_file}" | head -n1)"
+  [[ -n "${expected}" ]] || { echo "[warp] 校验文件无效" >&2; return 1; }
+  if [[ "${SHA256SUM_BIN}" == *shasum ]]; then
+    actual="$(shasum -a 256 "${file}" | awk '{print $1}')"
   else
-    actual="\$(sha256sum "\${file}" | awk '{print \$1}')"
+    actual="$(sha256sum "${file}" | awk '{print $1}')"
   fi
-  [[ "\${actual}" == "\${expected}" ]] || {
-    echo "[warp] SHA256 不匹配 (expected=\${expected} actual=\${actual})" >&2; return 1
+  [[ "${actual}" == "${expected}" ]] || {
+    echo "[warp] SHA256 不匹配 (expected=${expected} actual=${actual})" >&2; return 1
   }
   echo "[warp] SHA256 校验通过"
 }
 
-case "\${1:-}" in
+case "${1:-}" in
   status)
-    # ── 关键状态：Google 连通性（最重要，放最上面）──
+    # ── 关键状态：Google 连通性（最重要，顶部大横幅）──
     _google_ok=0
     if curl -s --max-time 6 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null \
        | grep -q "200"; then
@@ -968,154 +980,204 @@ case "\${1:-}" in
 
     echo
     if [[ ${_google_ok} -eq 1 ]]; then
-      echo -e "\${_G}╔══════════════════════════════════════════════════╗\${_N}"
-      echo -e "\${_G}║  ✓  Google / Gemini  已连通                      ║\${_N}"
-      echo -e "\${_G}╚══════════════════════════════════════════════════╝\${_N}"
+      echo -e "${_G}╔══════════════════════════════════════════════════╗${_N}"
+      echo -e "${_G}║  ✓  Google / Gemini  已连通                      ║${_N}"
+      echo -e "${_G}╚══════════════════════════════════════════════════╝${_N}"
     else
-      echo -e "\033[1;31m╔══════════════════════════════════════════════════╗\033[0m"
-      echo -e "\033[1;31m║  ✗  Google / Gemini  未连通                      ║\033[0m"
-      echo -e "\033[1;31m╚══════════════════════════════════════════════════╝\033[0m"
-      echo -e "    \${_Y}提示: 运行 'warp test' 查看逐层诊断\${_N}"
+      echo -e "${_R}╔══════════════════════════════════════════════════╗${_N}"
+      echo -e "${_R}║  ✗  Google / Gemini  未连通                      ║${_N}"
+      echo -e "${_R}╚══════════════════════════════════════════════════╝${_N}"
+      echo -e "    ${_Y}提示: 运行 'warp test' 查看逐层诊断${_N}"
     fi
     echo
 
     # ── WARP 客户端状态 ──
-    _warp_st="\$(warp-cli status 2>/dev/null || echo '未运行')"
-    if echo "\${_warp_st}" | grep -qi 'Connected'; then
-      echo -e "  WARP    \${_G}● 已连接\${_N}  端口 \${WARP_PROXY_PORT}"
+    _warp_st="$(warp-cli status 2>/dev/null || echo '未运行')"
+    if echo "${_warp_st}" | grep -qi 'Connected'; then
+      echo -e "  WARP     ${_G}● 已连接${_N}  端口 ${WARP_PROXY_PORT}"
     else
-      echo -e "  WARP    \033[1;31m● 未连接\033[0m  (\${_warp_st##*:})"
+      echo -e "  WARP     ${_R}● 未连接${_N}  (${_warp_st##*:})"
     fi
 
     # ── 透明代理状态 ──
     if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
-      _backend="\$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo '?')"
-      echo -e "  tproxy  \${_G}● 运行中\${_N}  backend=\${_backend}  :\${TPROXY_PORT}"
+      _backend="$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo '?')"
+      echo -e "  tproxy   ${_G}● 运行中${_N}  backend=${_backend}  :${TPROXY_PORT}"
     else
-      echo -e "  tproxy  \033[1;31m● 未运行\033[0m"
+      echo -e "  tproxy   ${_R}● 未运行${_N}"
     fi
 
     # ── ipset 条目数 ──
-    _cnt="\$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
-    if [[ "\${_cnt}" -gt 0 ]]; then
-      echo -e "  ipset   \${_G}● \${_cnt} 条 Google IP 段\${_N}"
+    _cnt="$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
+    if [[ "${_cnt}" -gt 0 ]]; then
+      echo -e "  ipset    ${_G}● ${_cnt} 条 Google IP 段${_N}"
     else
-      echo -e "  ipset   \033[1;31m● 空\033[0m"
+      echo -e "  ipset    ${_R}● 空${_N}"
     fi
 
     # ── iptables 规则 ──
     if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then
-      echo -e "  iptables \${_G}● REDIRECT 规则已加载\${_N}"
+      echo -e "  iptables ${_G}● REDIRECT 规则已加载${_N}"
     else
-      echo -e "  iptables \033[1;31m● 规则缺失\033[0m"
+      echo -e "  iptables ${_R}● 规则缺失${_N}"
     fi
     echo
-    echo -e "  \${_Y}详细诊断: warp test  |  原始日志: warp debug\${_N}"
+    echo -e "  ${_Y}详细诊断: warp test  |  原始日志: warp debug${_N}"
     echo ;;
+
   start)
     warp-cli connect 2>/dev/null || true
     /usr/local/bin/warp-google start ;;
+
   stop)
     /usr/local/bin/warp-google stop || true
     warp-cli disconnect 2>/dev/null || true ;;
+
   restart) /usr/local/bin/warp-google restart ;;
+
   test)
     ok=1
     echo "--- [1] WARP 客户端状态 ---"
-    warp_status="\$(warp-cli status 2>/dev/null || echo '无法获取')"
-    echo "\${warp_status}"
-    if echo "\${warp_status}" | grep -qi 'Connected'; then echo "  \${_G}✓ WARP 已连接\${_N}"
-    else echo "  ✗ WARP 未连接 — 尝试: warp-cli connect"; ok=0; fi
+    warp_status="$(warp-cli status 2>/dev/null || echo '无法获取')"
+    echo "${warp_status}"
+    if echo "${warp_status}" | grep -qi 'Connected'; then
+      echo -e "  ${_G}✓ WARP 已连接${_N}"
+    else
+      echo "  ✗ WARP 未连接 — 尝试: warp-cli connect"; ok=0
+    fi
     echo
 
-    echo "--- [2] SOCKS5 端口监听 (:\${WARP_PROXY_PORT}) ---"
-    if ss -tlnp 2>/dev/null | grep -q ":\${WARP_PROXY_PORT}"; then echo "  \${_G}✓ 端口监听中\${_N}"
-    else echo "  ✗ 未监听"; ok=0; fi
+    echo "--- [2] SOCKS5 端口监听 (:${WARP_PROXY_PORT}) ---"
+    if ss -tlnp 2>/dev/null | grep -q ":${WARP_PROXY_PORT}"; then
+      echo -e "  ${_G}✓ 端口监听中${_N}"
+    else
+      echo "  ✗ 未监听"; ok=0
+    fi
     echo
 
     echo "--- [3] SOCKS5 直连测试 (绕过透明代理) ---"
-    socks_code="\$(curl -s --max-time 10 -x "socks5h://127.0.0.1:\${WARP_PROXY_PORT}" \
--o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null || echo '000')"
-    echo "  HTTP: \${socks_code}"
-    if [[ "\${socks_code}" == "200" ]]; then echo "  \${_G}✓ SOCKS5 → Google 正常\${_N}"
-    else echo "  ✗ SOCKS5 不通"; ok=0; fi
+    socks_code="$(curl -s --max-time 10 \
+      -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" \
+      -o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null || echo '000')"
+    echo "  HTTP: ${socks_code}"
+    if [[ "${socks_code}" == "200" ]]; then
+      echo -e "  ${_G}✓ SOCKS5 → Google 正常${_N}"
+    else
+      echo "  ✗ SOCKS5 不通"; ok=0
+    fi
     echo
 
     echo "--- [4] warp-tproxy 进程 ---"
     if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
-      echo "  \${_G}✓ 运行中 (backend: \$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo unknown))\${_N}"
-    else echo "  ✗ 未运行 — systemctl restart warp-tproxy"; ok=0; fi
+      _be="$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo unknown)"
+      echo -e "  ${_G}✓ 运行中 (backend: ${_be})${_N}"
+    else
+      echo "  ✗ 未运行 — systemctl restart warp-tproxy"; ok=0
+    fi
     echo
 
     echo "--- [5] iptables 规则 ---"
-    if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then echo "  \${_G}✓ REDIRECT 规则存在\${_N}"
-    else echo "  ✗ 规则缺失 — warp-google start"; ok=0; fi
+    if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then
+      echo -e "  ${_G}✓ REDIRECT 规则存在${_N}"
+    else
+      echo "  ✗ 规则缺失 — warp-google start"; ok=0
+    fi
     echo
 
     echo "--- [6] ipset 条目数 ---"
-    cnt="\$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
-    if [[ "\${cnt}" -gt 0 ]]; then echo "  \${_G}✓ \${cnt} 条 Google IP 段\${_N}"
-    else echo "  ✗ ipset 为空 — warp update"; ok=0; fi
+    cnt="$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
+    if [[ "${cnt}" -gt 0 ]]; then
+      echo -e "  ${_G}✓ ${cnt} 条 Google IP 段${_N}"
+    else
+      echo "  ✗ ipset 为空 — warp update"; ok=0
+    fi
     echo
 
     echo "--- [7] 透明代理端到端测试 ---"
-    e2e_code="\$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null || echo '000')"
-    gem_code="\$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' https://gemini.google.com 2>/dev/null || echo '000')"
-    echo "  Google  HTTP \${e2e_code}"
-    echo "  Gemini  HTTP \${gem_code}"
-    if [[ "\${e2e_code}" == "200" ]]; then echo "  \${_G}✓ 透明代理正常\${_N}"
-    else echo "  ✗ 透明代理不通"; ok=0; fi
+    e2e_code="$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' \
+      https://www.google.com 2>/dev/null || echo '000')"
+    gem_code="$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' \
+      https://gemini.google.com 2>/dev/null || echo '000')"
+    echo "  Google   HTTP ${e2e_code}"
+    echo "  Gemini   HTTP ${gem_code}"
+    if [[ "${e2e_code}" == "200" ]]; then
+      echo -e "  ${_G}✓ 透明代理正常${_N}"
+    else
+      echo "  ✗ 透明代理不通"; ok=0
+    fi
     echo
 
     echo "--- [8] WARP 节点信息 ---"
-    curl -s --max-time 10 -x "socks5h://127.0.0.1:\${WARP_PROXY_PORT}" \
+    curl -s --max-time 10 \
+      -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" \
       https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null \
       | grep -E "^(warp|loc|ip)=" || echo "  (SOCKS5 不通时此项为空)"
     echo
 
-    if [[ \${ok} -eq 1 ]]; then
-      echo -e "\${_G}╔══════════════════════════════════════════════╗\${_N}"
-      echo -e "\${_G}║  ✓  Google Gemini 送中成功！全部检测通过     ║\${_N}"
-      echo -e "\${_G}╚══════════════════════════════════════════════╝\${_N}"
+    if [[ ${ok} -eq 1 ]]; then
+      echo -e "${_G}╔══════════════════════════════════════════════╗${_N}"
+      echo -e "${_G}║  ✓  Google Gemini 送中成功！全部检测通过     ║${_N}"
+      echo -e "${_G}╚══════════════════════════════════════════════╝${_N}"
     else
-      echo -e "\033[0;31m[✗] 存在异常，请根据上方提示逐层排查\033[0m"
-      echo -e "    详细日志: warp debug"
+      echo -e "${_R}[✗] 存在异常，请根据上方提示逐层排查${_N}"
+      echo    "    详细日志: warp debug"
     fi ;;
+
   debug)
-    echo "=== warp-cli status ===" ; warp-cli status 2>&1 || true
-    echo; echo "=== warp-tproxy service ===" ; systemctl status warp-tproxy --no-pager -l 2>&1 | head -25 || true
-    echo; echo "=== 端口监听 ===" ; ss -tlnp 2>/dev/null | grep -E ":\${WARP_PROXY_PORT}|:\${TPROXY_PORT}" || echo "无相关端口"
-    echo; echo "=== iptables nat OUTPUT ===" ; iptables -t nat -L OUTPUT -v --line-numbers 2>/dev/null | head -10 || true
-    echo; echo "=== ipset ===" ; ipset list warp_google4 2>/dev/null | head -6 || echo "不存在"
-    echo; echo "=== ENV 文件 ===" ; cat "\${ENV_FILE}" 2>/dev/null || echo "无"
-    echo; echo "=== 最近日志 ===" ; journalctl -u warp-tproxy -n 20 --no-pager 2>/dev/null || true ;;
+    echo "=== warp-cli status ==="
+    warp-cli status 2>&1 || true
+    echo
+    echo "=== warp-tproxy service ==="
+    systemctl status warp-tproxy --no-pager -l 2>&1 | head -25 || true
+    echo
+    echo "=== 端口监听 ==="
+    ss -tlnp 2>/dev/null | grep -E ":${WARP_PROXY_PORT}|:${TPROXY_PORT}" || echo "无相关端口"
+    echo
+    echo "=== iptables nat OUTPUT ==="
+    iptables -t nat -L OUTPUT -v --line-numbers 2>/dev/null | head -10 || true
+    echo
+    echo "=== ipset ==="
+    ipset list warp_google4 2>/dev/null | head -6 || echo "不存在"
+    echo
+    echo "=== ENV 文件 ==="
+    cat "${ENV_FILE}" 2>/dev/null || echo "无"
+    echo
+    echo "=== 最近日志 ==="
+    journalctl -u warp-tproxy -n 20 --no-pager 2>/dev/null || true ;;
+
   ip)
-    echo "直连 IP:"; curl -4 -s --max-time 8 ip.sb || echo "获取失败"
-    echo; echo "WARP IP:"; curl -s --max-time 8 -x "socks5h://127.0.0.1:\${WARP_PROXY_PORT}" ip.sb || echo "获取失败"
+    echo "直连 IP:"
+    curl -4 -s --max-time 8 ip.sb || echo "获取失败"
+    echo
+    echo "WARP IP:"
+    curl -s --max-time 8 -x "socks5h://127.0.0.1:${WARP_PROXY_PORT}" ip.sb || echo "获取失败"
     echo ;;
+
   update)
     /usr/local/bin/warp-google update
     /usr/local/bin/warp-google restart ;;
+
   upgrade)
     echo "[warp] 升级中..."
-    local_tmp="\$(mktemp)"; sum_tmp="\$(mktemp)"
-    trap "rm -f '\${local_tmp}' '\${sum_tmp}'" EXIT
-    curl -fsSL "\${REPO_RAW_URL}"    -o "\${local_tmp}" || { echo "[warp] 下载失败" >&2; exit 1; }
-    curl -fsSL "\${REPO_SHA256_URL}" -o "\${sum_tmp}"   || { echo "[warp] 校验文件下载失败" >&2; exit 1; }
-    _verify_checksum "\${local_tmp}" "\${sum_tmp}" || exit 1
-    bash -n "\${local_tmp}" || { echo "[warp] 语法检查失败" >&2; exit 1; }
-    chmod +x "\${local_tmp}"; bash "\${local_tmp}" --install
+    local_tmp="$(mktemp)"; sum_tmp="$(mktemp)"
+    trap "rm -f '${local_tmp}' '${sum_tmp}'" EXIT
+    curl -fsSL "${REPO_RAW_URL}"    -o "${local_tmp}" || { echo "[warp] 下载失败" >&2; exit 1; }
+    curl -fsSL "${REPO_SHA256_URL}" -o "${sum_tmp}"   || { echo "[warp] 校验文件下载失败" >&2; exit 1; }
+    _verify_checksum "${local_tmp}" "${sum_tmp}" || exit 1
+    bash -n "${local_tmp}" || { echo "[warp] 语法检查失败" >&2; exit 1; }
+    chmod +x "${local_tmp}"; bash "${local_tmp}" --install
     echo "[warp] 升级完成" ;;
+
   uninstall)
     # 强制从终端读取，避免 stdin 是管道时静默跳过
     read -r -p "确定要卸载 WARP？[y/N]: " confirm </dev/tty
-    [[ "\${confirm}" =~ ^[Yy]\$ ]] || { echo "已取消"; exit 0; }
+    [[ "${confirm}" =~ ^[Yy]$ ]] || { echo "已取消"; exit 0; }
     echo "正在卸载..."
     /usr/local/bin/warp-google stop 2>/dev/null || true
     warp-cli disconnect 2>/dev/null || true
     for svc in warp-keepalive.timer warp-keepalive.service warp-google.service \
                 warp-tproxy.service warp-svc.service redsocks.service; do
-      systemctl disable --now "\${svc}" 2>/dev/null || true
+      systemctl disable --now "${svc}" 2>/dev/null || true
     done
     rm -f /etc/systemd/system/warp-keepalive.timer   \
           /etc/systemd/system/warp-keepalive.service  \
@@ -1134,52 +1196,61 @@ case "\${1:-}" in
     iptables -t filter -F WARP_GOOGLE_QUIC            2>/dev/null || true
     iptables -t filter -X WARP_GOOGLE_QUIC            2>/dev/null || true
     ipset destroy warp_google4 2>/dev/null || true
-    sed -i "/\${GAI_MARK}/,+1d" /etc/gai.conf 2>/dev/null || true
-    if [[ -f "\${DNS_MODE_FILE}" ]]; then
-      _dns_mode="\$(cat "\${DNS_MODE_FILE}" 2>/dev/null || echo skip)"
-      case "\${_dns_mode}" in
-        resolved) rm -f "\${RESOLVED_DROPIN_FILE}"; systemctl restart systemd-resolved 2>/dev/null || true ;;
+    sed -i "/${GAI_MARK}/,+1d" /etc/gai.conf 2>/dev/null || true
+    if [[ -f "${DNS_MODE_FILE}" ]]; then
+      _dns_mode="$(cat "${DNS_MODE_FILE}" 2>/dev/null || echo skip)"
+      case "${_dns_mode}" in
+        resolved)
+          rm -f "${RESOLVED_DROPIN_FILE}"
+          systemctl restart systemd-resolved 2>/dev/null || true ;;
         file)
           chattr -i /etc/resolv.conf 2>/dev/null || true
-          [[ -f /etc/resolv.conf.warp-backup ]] && mv /etc/resolv.conf.warp-backup /etc/resolv.conf 2>/dev/null || true
-          _was_imm="\$(cat "\${CACHE_DIR}/resolv_was_immutable" 2>/dev/null || echo 0)"
-          [[ "\${_was_imm}" == "1" ]] && { chattr +i /etc/resolv.conf 2>/dev/null || true; echo "已恢复 resolv.conf 锁定"; }
-          rm -f "\${CACHE_DIR}/resolv_was_immutable" ;;
+          [[ -f /etc/resolv.conf.warp-backup ]] \
+            && mv /etc/resolv.conf.warp-backup /etc/resolv.conf 2>/dev/null || true
+          _was_imm="$(cat "${CACHE_DIR}/resolv_was_immutable" 2>/dev/null || echo 0)"
+          [[ "${_was_imm}" == "1" ]] && { chattr +i /etc/resolv.conf 2>/dev/null || true
+            echo "已恢复 resolv.conf 锁定"; }
+          rm -f "${CACHE_DIR}/resolv_was_immutable" ;;
         skip) ;;
       esac
-      rm -f "\${DNS_MODE_FILE}"
+      rm -f "${DNS_MODE_FILE}"
     fi
     if [[ -f /etc/os-release ]]; then
+      # shellcheck disable=SC1091
       source /etc/os-release
-      case "\${ID:-}" in
+      case "${ID:-}" in
         ubuntu|debian)
           apt-get remove -y cloudflare-warp 2>/dev/null || true
           rm -f /etc/apt/sources.list.d/cloudflare-client.list
           rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           apt-get update -y >/dev/null 2>&1 || true ;;
         centos|rhel|rocky|almalinux|fedora)
-          if command -v dnf >/dev/null 2>&1; then dnf remove -y cloudflare-warp 2>/dev/null || true
-          else yum remove -y cloudflare-warp 2>/dev/null || true; fi
+          if command -v dnf >/dev/null 2>&1; then
+            dnf remove -y cloudflare-warp 2>/dev/null || true
+          else
+            yum remove -y cloudflare-warp 2>/dev/null || true
+          fi
           rm -f /etc/yum.repos.d/cloudflare-warp.repo ;;
       esac
     fi
     rm -f /usr/local/bin/warp
     echo "卸载完成" ;;
+
   *)
-    echo -e "\${_W}WARP 管理工具 v\${SCRIPT_VERSION}\${_N}  \${_C}(Google Gemini 送中)\${_N}"
+    echo -e "${_W}WARP 管理工具 v${SCRIPT_VERSION}${_N}  ${_C}(Google Gemini 送中)${_N}"
     echo
     echo "用法: warp <命令>"
     echo
-    echo "  \${_G}status\${_N}    查看状态"
-    echo "  \${_G}start\${_N}     启动"
-    echo "  \${_G}stop\${_N}      停止"
-    echo "  \${_G}restart\${_N}   重启"
-    echo "  \${_G}test\${_N}      逐层诊断（8层，含端到端）"
-    echo "  \${_G}debug\${_N}     原始诊断信息（日志/端口/规则）"
-    echo "  \${_G}ip\${_N}        查看直连 IP 与 WARP IP"
-    echo "  \${_G}update\${_N}    更新 Google IP 段"
-    echo "  \${_G}upgrade\${_N}   升级脚本（含 SHA256 校验）"
-    echo "  \${_G}uninstall\${_N} 完整卸载" ;;
+    echo -e "  ${_G}status${_N}    查看状态（含 Google 连通性）"
+    echo -e "  ${_G}start${_N}     启动"
+    echo -e "  ${_G}stop${_N}      停止"
+    echo -e "  ${_G}restart${_N}   重启"
+    echo -e "  ${_G}test${_N}      8 层逐层诊断（含端到端）"
+    echo -e "  ${_G}debug${_N}     原始诊断信息（日志/端口/规则）"
+    echo -e "  ${_G}ip${_N}        查看直连 IP 与 WARP IP"
+    echo -e "  ${_G}update${_N}    更新 Google IP 段"
+    echo -e "  ${_G}upgrade${_N}   升级脚本（含 SHA256 校验）"
+    echo -e "  ${_G}uninstall${_N} 完整卸载" ;;
 esac
 WARPCLIEOF
 
