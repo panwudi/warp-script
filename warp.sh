@@ -440,10 +440,33 @@ configure_warp() {
     || warp-cli proxy port "${WARP_PROXY_PORT}" >/dev/null 2>&1 || true
   warp-cli --accept-tos connect >/dev/null 2>&1 \
     || warp-cli connect >/dev/null 2>&1 || true
-  sleep 2
-  local status
-  status=$(warp-cli --accept-tos status 2>/dev/null || warp-cli status 2>/dev/null || echo "未知")
-  info "WARP 状态：${status}"
+
+  # 轮询等待 WARP 实际连接成功，最多等 30 秒
+  info "等待 WARP 连接..."
+  local i status connected=0
+  for i in $(seq 1 30); do
+    status="$(warp-cli --accept-tos status 2>/dev/null || warp-cli status 2>/dev/null || echo '')"
+    if echo "${status}" | grep -qi 'Connected'; then
+      connected=1
+      break
+    fi
+    sleep 1
+    printf "."
+  done
+  echo
+
+  if [[ ${connected} -eq 1 ]]; then
+    success "WARP 已连接"
+    if ss -tlnp 2>/dev/null | grep -q ":${WARP_PROXY_PORT}"; then
+      success "SOCKS5 代理端口 ${WARP_PROXY_PORT} 已就绪"
+    else
+      warn "SOCKS5 端口 ${WARP_PROXY_PORT} 未监听，代理可能需要几秒钟启动"
+    fi
+  else
+    warn "WARP 30 秒内未连接，当前状态: ${status:-未知}"
+    warn "可能原因: 网络无法到达 Cloudflare 端点，或 WARP 注册未完成"
+    warn "安装后运行 'warp debug' 进行逐层诊断"
+  fi
 }
 
 setup_gai_conf() {
@@ -990,15 +1013,114 @@ case "\${1:-}" in
     /usr/local/bin/warp-google restart
     ;;
   test)
-    echo "=== Google 连接测试 ==="
-    curl -s --max-time 10 -o /dev/null -w "HTTP 状态码: %{http_code}\\n" https://www.google.com || echo "失败"
+    # 逐层诊断：每层失败都能定位根因
+    local ok=1
+
+    echo "--- [1] WARP 客户端状态 ---"
+    warp_status="\$(warp-cli status 2>/dev/null || echo '无法获取')"
+    echo "\${warp_status}"
+    if echo "\${warp_status}" | grep -qi 'Connected'; then
+      echo "  ✓ WARP 已连接"
+    else
+      echo "  ✗ WARP 未连接 — 尝试: warp-cli connect"
+      ok=0
+    fi
     echo
-    echo "=== Gemini 连接测试 ==="
-    curl -s --max-time 10 -o /dev/null -w "HTTP 状态码: %{http_code}\\n" https://gemini.google.com || echo "失败"
+
+    echo "--- [2] SOCKS5 端口监听 (:${WARP_PROXY_PORT}) ---"
+    if ss -tlnp 2>/dev/null | grep -q ":\${WARP_PROXY_PORT}"; then
+      echo "  ✓ 端口监听中"
+    else
+      echo "  ✗ 端口未监听 — warp-svc 可能未就绪"
+      ok=0
+    fi
     echo
-    echo "=== WARP Trace ==="
+
+    echo "--- [3] SOCKS5 直连测试 (绕过透明代理) ---"
+    socks_code="\$(curl -s --max-time 10 -x socks5h://127.0.0.1:\${WARP_PROXY_PORT} \
+-o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null || echo '000')"
+    echo "  HTTP 状态码: \${socks_code}"
+    if [[ "\${socks_code}" == "200" ]]; then
+      echo "  ✓ SOCKS5 → Google 正常"
+    else
+      echo "  ✗ SOCKS5 不通 — WARP 连接或网络问题"
+      ok=0
+    fi
+    echo
+
+    echo "--- [4] warp-tproxy 进程 ---"
+    if systemctl is-active --quiet warp-tproxy 2>/dev/null; then
+      echo "  ✓ warp-tproxy 运行中 (backend: \$(cat /etc/warp-google/tproxy_backend 2>/dev/null || echo unknown))"
+    else
+      echo "  ✗ warp-tproxy 未运行 — 尝试: systemctl restart warp-tproxy"
+      ok=0
+    fi
+    echo
+
+    echo "--- [5] iptables 规则 ---"
+    if iptables -t nat -S WARP_GOOGLE 2>/dev/null | grep -q REDIRECT; then
+      echo "  ✓ NAT REDIRECT 规则存在"
+    else
+      echo "  ✗ NAT 规则缺失 — 尝试: warp-google start"
+      ok=0
+    fi
+    echo
+
+    echo "--- [6] ipset 条目数 ---"
+    cnt="\$(ipset list warp_google4 2>/dev/null | grep -c '/' || echo 0)"
+    if [[ "\${cnt}" -gt 0 ]]; then
+      echo "  ✓ ipset 有 \${cnt} 条 Google IP 段"
+    else
+      echo "  ✗ ipset 为空 — 尝试: warp update"
+      ok=0
+    fi
+    echo
+
+    echo "--- [7] 透明代理端到端测试 ---"
+    e2e_code="\$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' https://www.google.com 2>/dev/null || echo '000')"
+    echo "  Google   HTTP \${e2e_code}"
+    gem_code="\$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' https://gemini.google.com 2>/dev/null || echo '000')"
+    echo "  Gemini   HTTP \${gem_code}"
+    if [[ "\${e2e_code}" == "200" ]]; then
+      echo "  ✓ 透明代理工作正常"
+    else
+      echo "  ✗ 透明代理不通"
+      ok=0
+    fi
+    echo
+
+    echo "--- [8] WARP 节点信息 ---"
     curl -s --max-time 10 -x "socks5h://127.0.0.1:\${WARP_PROXY_PORT}" \
-      https://www.cloudflare.com/cdn-cgi/trace | grep -E "^(warp|loc)=" || echo "未检测到"
+      https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null \
+      | grep -E "^(warp|loc|ip)=" || echo "  (SOCKS5 不通时此项为空)"
+    echo
+
+    if [[ \${ok} -eq 1 ]]; then
+      echo -e "\033[0;32m[✓] 全部检测通过\033[0m"
+    else
+      echo -e "\033[0;31m[✗] 存在异常，请根据上方提示逐层排查\033[0m"
+      echo -e "    详细日志: warp debug"
+    fi
+    ;;
+  debug)
+    echo "=== 原始诊断信息 ==="
+    echo "-- warp-cli status --"
+    warp-cli status 2>&1 || true
+    echo
+    echo "-- warp-tproxy service --"
+    systemctl status warp-tproxy --no-pager -l 2>&1 | head -20 || true
+    echo
+    echo "-- 端口监听 --"
+    ss -tlnp 2>/dev/null | grep -E ":\${WARP_PROXY_PORT}|:12345" || echo "无相关端口"
+    echo
+    echo "-- iptables nat OUTPUT --"
+    iptables -t nat -L OUTPUT -v --line-numbers 2>/dev/null | head -10 || true
+    echo
+    echo "-- ipset --"
+    ipset list warp_google4 2>/dev/null | head -5 || echo "ipset 不存在"
+    echo
+    echo "-- 最近日志 --"
+    journalctl -u warp-tproxy -n 20 --no-pager 2>/dev/null || true
     ;;
   ip)
     echo "直连 IP:"
@@ -1124,7 +1246,8 @@ case "\${1:-}" in
     echo "  start     启动"
     echo "  stop      停止"
     echo "  restart   重启"
-    echo "  test      测试 Google / Gemini 连通性"
+    echo "  test      逐层诊断（WARP状态/SOCKS5/tproxy/iptables/端到端）"
+    echo "  debug     输出原始诊断信息（日志/端口/规则）"
     echo "  ip        查看直连 IP 与 WARP IP"
     echo "  update    更新 Google IP 段"
     echo "  upgrade   升级脚本（含 SHA256 校验）"
@@ -1257,16 +1380,11 @@ do_install() {
   success "安装完成"
   echo -e "\n管理命令: ${GREEN}warp {status|start|stop|restart|test|ip|update|upgrade|uninstall}${NC}\n"
 
-  echo -e "${CYAN}测试连接...${NC}"
+  echo -e "${CYAN}\n安装后逐层诊断:${NC}"
   sleep 2
-  local code
-  code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" https://www.google.com || echo "000")
-  if [[ "${code}" == "200" ]]; then
-    success "Google 连接成功 ✓"
-  else
-    warn "Google 测试返回: ${code} (WARP 可能仍在初始化，稍后运行 'warp test' 验证)"
-  fi
+  warp test
 }
+
 
 do_status() {
   command_exists warp && warp status || echo "未安装"
