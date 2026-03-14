@@ -592,7 +592,7 @@ install_tproxy_backend() {
 
   install_ipt2socks || { error "ipt2socks 安装失败，无法继续"; return 1; }
 
-  local exec_start='/usr/local/bin/ipt2socks -4 -b 127.0.0.1 -l ${TPROXY_PORT} -s 127.0.0.1 -p ${WARP_PROXY_PORT} -j 2'
+  local exec_start='/usr/local/bin/ipt2socks -R -4 -b 127.0.0.1 -l ${TPROXY_PORT} -s 127.0.0.1 -p ${WARP_PROXY_PORT} -j 2'
 
   cat > /etc/systemd/system/warp-tproxy.service <<EOF_SVC
 [Unit]
